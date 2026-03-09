@@ -41,9 +41,11 @@ var edgeVoices = map[string]string{
 
 // Google Chirp 3: HD 목소리 프리셋
 var googleVoices = map[string]string{
-	"female":  "ko-KR-Chirp3-HD-Aoede",
-	"male":    "ko-KR-Chirp3-HD-Charon",
-	"default": "ko-KR-Chirp3-HD-Aoede",
+	"aoede":      "ko-KR-Chirp3-HD-Aoede",
+	"leda":        "ko-KR-Chirp3-HD-Leda",
+	"callirrhoe": "ko-KR-Chirp3-HD-Callirrhoe",
+	"female":      "ko-KR-Chirp3-HD-Aoede",
+	"default":     "ko-KR-Chirp3-HD-Aoede",
 }
 
 var (
