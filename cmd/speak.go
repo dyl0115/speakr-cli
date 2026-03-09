@@ -45,7 +45,7 @@ var googleVoices = map[string]string{
 	"leda":        "ko-KR-Chirp3-HD-Leda",
 	"callirrhoe": "ko-KR-Chirp3-HD-Callirrhoe",
 	"female":      "ko-KR-Chirp3-HD-Aoede",
-	"default":     "ko-KR-Chirp3-HD-Aoede",
+	"default":     "ko-KR-Chirp3-HD-Leda",
 }
 
 var (
@@ -63,7 +63,7 @@ var speakCmd = &cobra.Command{
 
 func init() {
 	rootCmd.AddCommand(speakCmd)
-	speakCmd.Flags().StringVarP(&flagVoice, "voice", "v", "female", "목소리 프리셋 (female, male) 또는 Voice ID 직접 입력")
+	speakCmd.Flags().StringVarP(&flagVoice, "voice", "v", "leda", "목소리 프리셋 (female, male) 또는 Voice ID 직접 입력")
 	speakCmd.Flags().StringVarP(&flagOutput, "output", "o", "", "저장 파일명 (기본: 타임스탬프)")
 	speakCmd.Flags().StringVarP(&flagBackend, "backend", "b", "google", "TTS 백엔드 (elevenlabs, edge, google)")
 }
