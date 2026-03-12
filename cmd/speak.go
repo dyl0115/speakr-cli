@@ -18,7 +18,8 @@ import (
 
 const (
 	apiURL       = "https://api.elevenlabs.io/v1/text-to-speech/"
-	googleTTSURL = "https://texttospeech.googleapis.com/v1/text:synthesize"
+	googleTTSURL  = "https://texttospeech.googleapis.com/v1/text:synthesize"
+	geminiTTSURL  = "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent"
 	outDir       = "/home/ubuntu/onedrive/tts"
 	ntfyTopic    = "dd-claude-x9k4m2"
 	edgeTTS      = "/home/ubuntu/.local/bin/edge-tts"
@@ -37,6 +38,17 @@ var edgeVoices = map[string]string{
 	"female":  "ko-KR-SunHiNeural",
 	"male":    "ko-KR-InJoonNeural",
 	"default": "ko-KR-SunHiNeural",
+}
+
+// Gemini TTS 목소리 프리셋
+var geminiVoices = map[string]string{
+	"aoede":   "Aoede",
+	"leda":    "Leda",
+	"puck":    "Puck",
+	"charon":  "Charon",
+	"kore":    "Kore",
+	"female":  "Leda",
+	"default": "Leda",
 }
 
 // Google Chirp 3: HD 목소리 프리셋
@@ -89,6 +101,13 @@ func resolveGoogleVoice(v string) string {
 	return v
 }
 
+func resolveGeminiVoice(v string) string {
+	if id, ok := geminiVoices[v]; ok {
+		return id
+	}
+	return v
+}
+
 func runSpeak(cmd *cobra.Command, args []string) error {
 	text := strings.Join(args, " ")
 
@@ -103,6 +122,8 @@ func runSpeak(cmd *cobra.Command, args []string) error {
 		outPath, err = runEdgeTTS(text)
 	case "google":
 		outPath, err = runGoogleTTS(text)
+	case "gemini":
+		outPath, err = runGeminiTTS(text)
 	default:
 		outPath, err = runElevenLabs(text)
 	}
@@ -113,7 +134,7 @@ func runSpeak(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("✅ 저장 완료: %s\n", outPath)
 
-	if flagBackend == "edge" {
+	if flagBackend == "edge" || flagBackend == "gemini" {
 		sendTelegram(outPath, text)
 	} else {
 		sendNtfy(filepath.Base(outPath), truncate(text, 40))
@@ -252,6 +273,162 @@ func callElevenLabs(apiKey, voice, text string) ([]byte, error) {
 	}
 
 	return io.ReadAll(resp.Body)
+}
+
+// ── Gemini TTS 백엔드 ───────────────────────────────────────────
+func runGeminiTTS(text string) (string, error) {
+	// gemini는 WAV 출력
+	if flagOutput == "" {
+		flagOutput = time.Now().Format("20060102_150405") + ".wav"
+	} else if filepath.Ext(flagOutput) == ".mp3" {
+		flagOutput = strings.TrimSuffix(flagOutput, ".mp3") + ".wav"
+	}
+	apiKey := os.Getenv("GEMINI_API_KEY")
+	if apiKey == "" {
+		return "", fmt.Errorf("GEMINI_API_KEY 환경변수가 설정되지 않았습니다")
+	}
+
+	voiceName := resolveGeminiVoice(flagVoice)
+	model := "gemini-2.5-flash-preview-tts"
+	audio, err := callGeminiTTS(apiKey, model, voiceName, text)
+	if err != nil {
+		return "", fmt.Errorf("Gemini TTS API 오류: %w", err)
+	}
+
+	return saveAudio(audio, flagOutput)
+}
+
+type geminiTTSRequest struct {
+	Contents       []geminiContent      `json:"contents"`
+	GenerationConfig geminiGenConfig    `json:"generationConfig"`
+}
+
+type geminiContent struct {
+	Parts []geminiPart `json:"parts"`
+}
+
+type geminiPart struct {
+	Text string `json:"text"`
+}
+
+type geminiGenConfig struct {
+	ResponseModalities []string        `json:"responseModalities"`
+	SpeechConfig       geminiSpeechCfg `json:"speechConfig"`
+}
+
+type geminiSpeechCfg struct {
+	VoiceConfig geminiVoiceCfg `json:"voiceConfig"`
+}
+
+type geminiVoiceCfg struct {
+	PrebuiltVoiceConfig geminiPrebuiltVoice `json:"prebuiltVoiceConfig"`
+}
+
+type geminiPrebuiltVoice struct {
+	VoiceName string `json:"voiceName"`
+}
+
+type geminiTTSResponse struct {
+	Candidates []struct {
+		Content struct {
+			Parts []struct {
+				InlineData struct {
+					MimeType string `json:"mimeType"`
+					Data     string `json:"data"`
+				} `json:"inlineData"`
+			} `json:"parts"`
+		} `json:"content"`
+	} `json:"candidates"`
+}
+
+func callGeminiTTS(apiKey, model, voiceName, text string) ([]byte, error) {
+	body := geminiTTSRequest{
+		Contents: []geminiContent{
+			{Parts: []geminiPart{{Text: text}}},
+		},
+		GenerationConfig: geminiGenConfig{
+			ResponseModalities: []string{"AUDIO"},
+			SpeechConfig: geminiSpeechCfg{
+				VoiceConfig: geminiVoiceCfg{
+					PrebuiltVoiceConfig: geminiPrebuiltVoice{VoiceName: voiceName},
+				},
+			},
+		},
+	}
+
+	jsonBody, _ := json.Marshal(body)
+	reqURL := fmt.Sprintf(geminiTTSURL, model) + "?key=" + apiKey
+
+	req, err := http.NewRequest("POST", reqURL, bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		errBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(errBody))
+	}
+
+	var ttsResp geminiTTSResponse
+	if err := json.NewDecoder(resp.Body).Decode(&ttsResp); err != nil {
+		return nil, fmt.Errorf("응답 파싱 오류: %w", err)
+	}
+
+	if len(ttsResp.Candidates) == 0 || len(ttsResp.Candidates[0].Content.Parts) == 0 {
+		return nil, fmt.Errorf("빈 오디오 응답")
+	}
+
+	audioData := ttsResp.Candidates[0].Content.Parts[0].InlineData.Data
+	pcmData, err := base64.StdEncoding.DecodeString(audioData)
+	if err != nil {
+		return nil, fmt.Errorf("base64 디코딩 오류: %w", err)
+	}
+
+	// PCM → WAV 헤더 추가 (24000Hz, 16bit, mono)
+	wavData := addWAVHeader(pcmData, 24000, 1, 16)
+	return wavData, nil
+}
+
+func addWAVHeader(pcm []byte, sampleRate, channels, bitsPerSample int) []byte {
+	dataSize := len(pcm)
+	headerSize := 44
+	totalSize := headerSize + dataSize
+
+	buf := make([]byte, totalSize)
+	// RIFF chunk
+	copy(buf[0:], []byte("RIFF"))
+	putUint32LE(buf[4:], uint32(totalSize-8))
+	copy(buf[8:], []byte("WAVE"))
+	// fmt chunk
+	copy(buf[12:], []byte("fmt "))
+	putUint32LE(buf[16:], 16)
+	putUint16LE(buf[20:], 1) // PCM
+	putUint16LE(buf[22:], uint16(channels))
+	putUint32LE(buf[24:], uint32(sampleRate))
+	putUint32LE(buf[28:], uint32(sampleRate*channels*bitsPerSample/8))
+	putUint16LE(buf[32:], uint16(channels*bitsPerSample/8))
+	putUint16LE(buf[34:], uint16(bitsPerSample))
+	// data chunk
+	copy(buf[36:], []byte("data"))
+	putUint32LE(buf[40:], uint32(dataSize))
+	copy(buf[44:], pcm)
+	return buf
+}
+
+func putUint32LE(b []byte, v uint32) {
+	b[0] = byte(v); b[1] = byte(v >> 8); b[2] = byte(v >> 16); b[3] = byte(v >> 24)
+}
+
+func putUint16LE(b []byte, v uint16) {
+	b[0] = byte(v); b[1] = byte(v >> 8)
 }
 
 // ── Google Cloud TTS 백엔드 ──────────────────────────────────────
